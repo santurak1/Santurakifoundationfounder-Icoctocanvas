@@ -14,13 +14,18 @@
 
 import { useState, useEffect, useRef, forwardRef } from "preact/compat";
 import { useImperativeHandle } from "preact/hooks";
-import html2canvas from "html2canvas";
+
 import type { GitHubUser } from "./GitHubWallpaperApp";
 import { Checkbox, PrimerSelect } from "./ui/FormControls";
 import { Icon } from "./ui/Icon";
 import { PrimaryButton, SecondaryButton } from "./ui/Button";
 import styles from "./ReadmeBanner.module.css";
 import sharedStyles from "./shared.module.css";
+import { copyPngBlobToClipboard } from "../utils/imageExport";
+import { downloadElementAsPng, elementToPngBlob } from "../utils/domExport";
+
+/** README banners are wide, so 2x keeps the exported file size reasonable. */
+const BANNER_EXPORT_SCALE = 2;
 
 export interface ReadmeBannerRef {
   downloadBanner: () => Promise<void>;
@@ -67,6 +72,28 @@ const LANGUAGE_COLORS: Record<string, string> = {
   Vue: "#41b883",
   Svelte: "#ff3e00",
 };
+
+const README_BANNER_FILENAME = "banner.png";
+
+const getReadmeBannerMarkdown = (username: string) =>
+  `![${username}'s GitHub Banner](https://raw.githubusercontent.com/${username}/${username}/main/${README_BANNER_FILENAME})`;
+
+const getReadmeBannerInstructions = (
+  username: string,
+  markdown: string,
+  copied: boolean
+) =>
+  `${copied ? "✓ Markdown copied to clipboard!" : "Markdown could not be copied automatically."}
+
+Next steps:
+1. Download the banner and save it as ${README_BANNER_FILENAME}.
+2. Upload ${README_BANNER_FILENAME} to the root of your ${username}/${username} profile repository.
+3. ${copied ? "Paste the copied Markdown in README.md." : "Copy the Markdown below into README.md."}
+
+The Markdown points to /${README_BANNER_FILENAME} on the main branch:
+${markdown}
+
+If you use a different filename or folder, update the Markdown path to match.`;
 
 const ReadmeBanner = forwardRef<ReadmeBannerRef, ReadmeBannerProps>(
   (
@@ -494,22 +521,11 @@ const ReadmeBanner = forwardRef<ReadmeBannerRef, ReadmeBannerProps>(
       if (!standardBannerRef.current) return;
 
       try {
-        const canvas = await html2canvas(standardBannerRef.current, {
-          scale: 2,
-          backgroundColor: null,
-          useCORS: true,
-        });
-
-        canvas.toBlob((blob) => {
-          if (!blob) return;
-
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = `${user.login}-readme-banner.png`;
-          link.click();
-          URL.revokeObjectURL(url);
-        });
+        await downloadElementAsPng(
+          standardBannerRef.current,
+          `${user.login}-readme-banner.png`,
+          { scale: BANNER_EXPORT_SCALE }
+        );
       } catch (error) {
         console.error("Error generating banner:", error);
       }
@@ -519,210 +535,152 @@ const ReadmeBanner = forwardRef<ReadmeBannerRef, ReadmeBannerProps>(
      * Copy markdown code to clipboard
      */
     const copyMarkdown = () => {
-      // You would typically host the image on GitHub or a CDN
-      // For now, we'll provide a template markdown that users can update
-      const markdown = `![${user.login}'s GitHub Banner](https://raw.githubusercontent.com/${user.login}/${user.login}/main/banner.png)`;
+      const markdown = getReadmeBannerMarkdown(user.login);
 
       navigator.clipboard
         .writeText(markdown)
         .then(() => {
-          alert(
-            "✓ Markdown copied to clipboard!\n\nUpload your banner.png to your profile repository and use this code in your README."
-          );
+          alert(getReadmeBannerInstructions(user.login, markdown, true));
         })
         .catch(() => {
-          alert("Markdown code:\n\n" + markdown);
+          alert(getReadmeBannerInstructions(user.login, markdown, false));
         });
+    };
+
+    const copyBannerAndShare = async ({
+      successMessage,
+      copyFailureMessage,
+      generationFailureMessage,
+      shareUrl,
+      windowName,
+      windowFeatures,
+      afterShare,
+    }: {
+      successMessage: string;
+      copyFailureMessage: string;
+      generationFailureMessage: string;
+      shareUrl?: string;
+      windowName: string;
+      windowFeatures: string;
+      afterShare?: () => void;
+    }) => {
+      if (!standardBannerRef.current) return;
+
+      try {
+        const blob = await elementToPngBlob(standardBannerRef.current, {
+          scale: BANNER_EXPORT_SCALE,
+        });
+        if (!blob) {
+          throw new Error("Failed to generate banner image");
+        }
+
+        try {
+          await copyPngBlobToClipboard(blob);
+          alert(successMessage);
+
+          if (shareUrl) {
+            window.open(shareUrl, windowName, windowFeatures);
+          }
+          afterShare?.();
+        } catch (error) {
+          console.error("Error copying to clipboard:", error);
+          alert(copyFailureMessage);
+        }
+      } catch (error) {
+        console.error(`Error preparing banner for ${windowName}:`, error);
+        alert(generationFailureMessage);
+      }
     };
 
     /**
      * Share banner to Twitter/X
      */
     const handleTwitterShare = async () => {
-      if (!standardBannerRef.current) return;
+      const tweetText =
+        "Just created my custom GitHub Universe README banner using Octocanvas from #GitHubUniverse 🎉";
+      const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(
+        tweetText
+      )}`;
 
-      try {
-        const canvas = await html2canvas(standardBannerRef.current, {
-          scale: 2,
-          backgroundColor: null,
-          useCORS: true,
-        });
-
-        canvas.toBlob(async (blob) => {
-          if (blob) {
-            try {
-              await navigator.clipboard.write([
-                new ClipboardItem({ "image/png": blob }),
-              ]);
-
-              alert(
-                "✅ Banner copied to clipboard! You can now paste it in your tweet."
-              );
-
-              const tweetText =
-                "Just created my custom GitHub Universe README banner using Octocanvas from #GitHubUniverse 🎉";
-              const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(
-                tweetText
-              )}`;
-              window.open(
-                twitterUrl,
-                "twitter-share-dialog",
-                "width=626,height=436"
-              );
-            } catch (error) {
-              console.error("Error copying to clipboard:", error);
-              alert(
-                "Failed to copy banner to clipboard. Please download it manually."
-              );
-            }
-          }
-        }, "image/png");
-      } catch (error) {
-        console.error("Error sharing to Twitter:", error);
-        alert("Failed to generate banner image. Please try again.");
-      }
+      await copyBannerAndShare({
+        successMessage:
+          "✅ Banner copied to clipboard! You can now paste it in your tweet.",
+        copyFailureMessage:
+          "Failed to copy banner to clipboard. Please download it manually.",
+        generationFailureMessage: "Failed to generate banner image. Please try again.",
+        shareUrl: twitterUrl,
+        windowName: "twitter-share-dialog",
+        windowFeatures: "width=626,height=436",
+      });
     };
 
     /**
      * Share banner to Bluesky
      */
     const handleBlueskyShare = async () => {
-      if (!standardBannerRef.current) return;
+      const postText =
+        "Just created my custom GitHub Universe README banner using Octocanvas from #GitHubUniverse 🎉";
+      const blueskyUrl = `https://bsky.app/intent/compose?text=${encodeURIComponent(
+        postText
+      )}`;
 
-      try {
-        const canvas = await html2canvas(standardBannerRef.current, {
-          scale: 2,
-          backgroundColor: null,
-          useCORS: true,
-        });
-
-        canvas.toBlob(async (blob) => {
-          if (blob) {
-            try {
-              await navigator.clipboard.write([
-                new ClipboardItem({ "image/png": blob }),
-              ]);
-
-              alert(
-                "✅ Banner copied to clipboard! You can now paste it in your Bluesky post."
-              );
-
-              const postText =
-                "Just created my custom GitHub Universe README banner using Octocanvas from #GitHubUniverse 🎉";
-              const blueskyUrl = `https://bsky.app/intent/compose?text=${encodeURIComponent(
-                postText
-              )}`;
-              window.open(
-                blueskyUrl,
-                "bluesky-share-dialog",
-                "width=626,height=600"
-              );
-            } catch (error) {
-              console.error("Error copying to clipboard:", error);
-              alert(
-                "Failed to copy banner to clipboard. Please download it manually."
-              );
-            }
-          }
-        }, "image/png");
-      } catch (error) {
-        console.error("Error sharing to Bluesky:", error);
-        alert("Failed to generate banner image. Please try again.");
-      }
+      await copyBannerAndShare({
+        successMessage:
+          "✅ Banner copied to clipboard! You can now paste it in your Bluesky post.",
+        copyFailureMessage:
+          "Failed to copy banner to clipboard. Please download it manually.",
+        generationFailureMessage: "Failed to generate banner image. Please try again.",
+        shareUrl: blueskyUrl,
+        windowName: "bluesky-share-dialog",
+        windowFeatures: "width=626,height=600",
+      });
     };
 
     /**
      * Share banner to Threads
      */
     const handleThreadsShare = async () => {
-      if (!standardBannerRef.current) return;
+      const postText =
+        "Just created my custom GitHub Universe README banner using Octocanvas from #GitHubUniverse 🎉";
+      const threadsUrl = `https://www.threads.net/intent/post?text=${encodeURIComponent(
+        postText
+      )}`;
 
-      try {
-        const canvas = await html2canvas(standardBannerRef.current, {
-          scale: 2,
-          backgroundColor: null,
-          useCORS: true,
-        });
-
-        canvas.toBlob(async (blob) => {
-          if (blob) {
-            try {
-              await navigator.clipboard.write([
-                new ClipboardItem({ "image/png": blob }),
-              ]);
-
-              alert(
-                "✅ Banner copied to clipboard! You can now paste it in your Threads post."
-              );
-
-              const postText =
-                "Just created my custom GitHub Universe README banner using Octocanvas from #GitHubUniverse 🎉";
-              const threadsUrl = `https://www.threads.net/intent/post?text=${encodeURIComponent(
-                postText
-              )}`;
-              window.open(
-                threadsUrl,
-                "threads-share-dialog",
-                "width=626,height=600"
-              );
-            } catch (error) {
-              console.error("Error copying to clipboard:", error);
-              alert(
-                "Failed to copy banner to clipboard. Please download it manually."
-              );
-            }
-          }
-        }, "image/png");
-      } catch (error) {
-        console.error("Error sharing to Threads:", error);
-        alert("Failed to generate banner image. Please try again.");
-      }
+      await copyBannerAndShare({
+        successMessage:
+          "✅ Banner copied to clipboard! You can now paste it in your Threads post.",
+        copyFailureMessage:
+          "Failed to copy banner to clipboard. Please download it manually.",
+        generationFailureMessage: "Failed to generate banner image. Please try again.",
+        shareUrl: threadsUrl,
+        windowName: "threads-share-dialog",
+        windowFeatures: "width=626,height=600",
+      });
     };
 
     /**
      * Share banner to Instagram
      */
     const handleInstagramShare = async () => {
-      if (!standardBannerRef.current) return;
-
-      try {
-        const canvas = await html2canvas(standardBannerRef.current, {
-          scale: 2,
-          backgroundColor: null,
-          useCORS: true,
-        });
-
-        canvas.toBlob(async (blob) => {
-          if (blob) {
-            try {
-              await navigator.clipboard.write([
-                new ClipboardItem({ "image/png": blob }),
-              ]);
-
-              alert(
-                "✅ Banner copied to clipboard!\n\n📱 To share on Instagram:\n1. Open the Instagram app on your device\n2. Tap the + button to create a new post\n3. Paste the image from your clipboard\n4. Add your caption and share!"
-              );
-
-              window.location.href = "instagram://library";
-              setTimeout(() => {
-                window.open(
-                  "https://www.instagram.com/",
-                  "instagram-share",
-                  "width=626,height=600"
-                );
-              }, 1500);
-            } catch (error) {
-              console.error("Error copying to clipboard:", error);
-              alert(
-                "Failed to copy banner to clipboard. Please download it manually."
-              );
-            }
-          }
-        }, "image/png");
-      } catch (error) {
-        console.error("Error sharing to Instagram:", error);
-        alert("Failed to generate banner image. Please try again.");
-      }
+      await copyBannerAndShare({
+        successMessage:
+          "✅ Banner copied to clipboard!\n\n📱 To share on Instagram:\n1. Open the Instagram app on your device\n2. Tap the + button to create a new post\n3. Paste the image from your clipboard\n4. Add your caption and share!",
+        copyFailureMessage:
+          "Failed to copy banner to clipboard. Please download it manually.",
+        generationFailureMessage: "Failed to generate banner image. Please try again.",
+        windowName: "instagram-share",
+        windowFeatures: "width=626,height=600",
+        afterShare: () => {
+          window.location.href = "instagram://library";
+          setTimeout(() => {
+            window.open(
+              "https://www.instagram.com/",
+              "instagram-share",
+              "width=626,height=600"
+            );
+          }, 1500);
+        },
+      });
     };
 
     // Expose functions via ref
